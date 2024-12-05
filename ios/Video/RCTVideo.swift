@@ -284,13 +284,21 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             _videoCache.playerItemPrepareText = playerItemPrepareText
         #endif
     }
+
+    // MARK: - Calculate responsive font size
+    func responsiveSize(_ size: CGFloat, factor: CGFloat = 0.5) -> CGFloat {
+        let screenWidth = UIScreen.main.bounds.width
+        let referenceScreenWidth: CGFloat = 375.0 // Base reference width (e.g., iPhone 12 Mini)
+        let scaledSize = size * (screenWidth / referenceScreenWidth)
+        return size + (scaledSize - size) * factor
+    }
     
     // MARK: - Setup label to display Subtitles
     private func setupLabel() {
         // 2. Initialize the UILabel and configure properties
         subtitleLabel = UILabel()
         subtitleLabel?.textColor = .white
-        subtitleLabel?.font = UIFont.systemFont(ofSize: 11)
+        subtitleLabel?.font = UIFont.systemFont(ofSize: responsiveSize(11.0))
         subtitleLabel?.textAlignment = .center
         subtitleLabel?.numberOfLines = 0
         subtitleLabel?.backgroundColor = UIColor.black.withAlphaComponent(0.5)
@@ -308,10 +316,10 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 //        print("WIDTH:::\(bounds.width)")
         
         NSLayoutConstraint.activate([
-            subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20.0),
+            subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -responsiveSize(20.0)),
             subtitleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.8),
-            subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 20.0)
+            subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: responsiveSize(20.0))
         ])
         
         layoutSubviews()
@@ -1077,7 +1085,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     func setSelectedTextTrack(_ selectedTextTrack: NSDictionary?) {
         setSelectedTextTrack(SelectedTrackCriteria(selectedTextTrack))
     }
-    
+
     // MARK: - Check URL extension
 //    func isM3U8(url: URL) -> Bool {
 //        return url.pathExtension.lowercased() == "m3u8"
@@ -1085,13 +1093,13 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     
     // MARK: - Setup and Fetch Text Tracks from URI
     private func setupAndFetchTextTracks() {
-        if _textTracks.count > 0, let selectedValue = _selectedTextTrackCriteria?.value {
+        guard let source = _source else { return }
+        if source.textTracks.count > 0, let selectedValue = _selectedTextTrackCriteria.value {
             if selectedValue == "disabled" || selectedValue == "off" {
                 self.subtitleLabel?.isHidden = true
                 subtitles = []
             } else if selectedValue != "auto" {
                 self.subtitleLabel?.isHidden = false
-                guard let source = _source else { return }
                 if let selectedTextTrack = source.textTracks.first(where: { $0.title == selectedValue }) {
                     let subtitleUri = selectedTextTrack.uri
                     guard let subtitleUrl = URL(string: subtitleUri) else { return }
@@ -1122,7 +1130,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         if !source.textTracks.isEmpty { // sideloaded text tracks
             if let uri = _source?.uri {
                 /// Check for URL and Custom TextTracks as it won't work with HLS playlist https://docs.thewidlarzgroup.com/react-native-video/component/props#texttracks-1
-                if uri.contains("m3u8") && _textTracks.count > 0 {
+                if uri.contains("m3u8") && source.textTracks.count > 0 {
                     self.setupAndFetchTextTracks()
                 } else {
                     RCTPlayerOperations.setSideloadedText(player: _player, textTracks: source.textTracks, criteria: _selectedTextTrackCriteria)
