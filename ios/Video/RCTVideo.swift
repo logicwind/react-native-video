@@ -11,6 +11,7 @@ struct Subtitle {
     let startTime: TimeInterval
     let endTime: TimeInterval
     let text: String
+    let styles: [String: String]
 }
 
 // MARK: - RCTVideo
@@ -281,7 +282,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         subtitleLabel?.font = UIFont.systemFont(ofSize: responsiveSize(11.0))
         subtitleLabel?.textAlignment = .center
         subtitleLabel?.numberOfLines = 0
-        subtitleLabel?.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        subtitleLabel?.backgroundColor = UIColor.black.withAlphaComponent(0.8)
         subtitleLabel?.layer.cornerRadius = 5
         subtitleLabel?.layer.masksToBounds = true
         subtitleLabel?.translatesAutoresizingMaskIntoConstraints = false
@@ -293,10 +294,8 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         
 //        subtitleLabel?.preferredMaxLayoutWidth = bounds.width * 0.8
         
-//        print("WIDTH:::\(bounds.width)")
-        
         NSLayoutConstraint.activate([
-            subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -responsiveSize(20.0)),
+            subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -responsiveSize(15.0)),
             subtitleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
             subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.8),
             subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: responsiveSize(20.0))
@@ -1810,20 +1809,68 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     func updateSubtitles(for time: CMTime) {
         let currentTime = CMTimeGetSeconds(time)
         if let subtitle = subtitles.first(where: { $0.startTime <= currentTime && $0.endTime >= currentTime }) {
-            print("TEXT:::\(subtitle.text)")
-//            if subviews.contains(subtitleLabel!) {
-//                print("subtitleLabel is a direct subview:::")
-//            } else if self.isSubview(subtitleLabel!) {
-//                print("subtitleLabel exists somewhere in the view hierarchy:::")
-//            } else {
-//                print("subtitleLabel is not added to the view hierarchy:::")
-//            }
+//            subtitleLabel.isHidden = true
+            subtitleLabel?.removeFromSuperview()
             subtitleLabel?.text = subtitle.text
-            subtitleLabel?.isHidden = false
+            
+            // Extract styles
+            var bottomMarginPercentage: CGFloat = 15.0 // Default bottom margin
+            var widthPercentage: CGFloat = 0.8 // Default width multiplier
+            
+            if let size = subtitle.styles["size"], let width = Double(size.replacingOccurrences(of: "%", with: "")) {
+                widthPercentage = CGFloat(width / 100.0)
+            }
+            
+//            if let line = subtitle.styles["line"], let fontSize = Double(line.replacingOccurrences(of: "%", with: "")) {
+//                subtitleLabel.font = UIFont.systemFont(ofSize: CGFloat(12 + 12 * (fontSize/100.0)))
+//            }
+            
+            if let position = subtitle.styles["position"], let positionValue = Double(position.replacingOccurrences(of: "%", with: "")) {
+                bottomMarginPercentage = self.frame.height * CGFloat(positionValue) / 100.0
+            }
+            
+            self.addSubview(subtitleLabel)
+            
+            if let align = subtitle.styles["align"] {
+                switch align {
+                case "start":
+                    subtitleLabel.textAlignment = .left
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = true
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = false
+//                    subtitleLabel.frame.origin.x = responsiveSize(15.0)
+                case "end":
+                    subtitleLabel.textAlignment = .right
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = true
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = false
+//                    subtitleLabel.frame.origin.x = self.frame.size.width - subtitleLabel.frame.size.width - responsiveSize(15.0)
+                default:
+                    subtitleLabel.textAlignment = .center
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = false
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = true
+                    break
+                }
+            } else {
+                subtitleLabel.textAlignment = .center
+                subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = true
+            }
+            
+            // Apply constraints
+            let bottomConstraint = subtitleLabel.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -responsiveSize(bottomMarginPercentage))
+            let widthConstraint = subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: self.widthAnchor, multiplier: widthPercentage)
+            
             subtitleLabel?.setNeedsLayout()
             subtitleLabel?.layoutIfNeeded()
+            subtitleLabel?.isHidden = false
+            
+            NSLayoutConstraint.activate([
+                bottomConstraint,
+                widthConstraint,
+                subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 20.0)
+            ])
         } else {
-            print("NO-TEXT:::")
             subtitleLabel?.isHidden = true
         }
     }
@@ -1848,14 +1895,14 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     func parseVTT(_ content: String) -> [Subtitle] {
         var subtitles = [Subtitle]()
         let blocks = content.components(separatedBy: "\n\n") // Split into subtitle blocks
-        
+
         for block in blocks {
             let lines = block.components(separatedBy: "\n").filter { !$0.isEmpty }
             guard !lines.isEmpty else { continue }
-            
+
             var timeLine: String
             var textLines: [String]
-            
+
             // Check if the block starts with an index
             if let _ = Int(lines[0]) {
                 // Block includes an index line
@@ -1868,21 +1915,33 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                 timeLine = lines[0] // First line contains the timestamps (with possible settings)
                 textLines = Array(lines[1...]) // Remaining lines contain the subtitle text
             }
-            
-            // Extract the timestamps from the timeline, ignoring any settings
-            let timeParts = timeLine.components(separatedBy: " --> ").map {
-                $0.components(separatedBy: " ").first?.trimmingCharacters(in: .whitespaces) ?? ""
-            }
-            guard timeParts.count == 2,
-                  let start = parseTime(timeParts[0]),
-                  let end = parseTime(timeParts[1]) else {
+
+            // Extract the timestamps and styles from the timeline
+            let timeParts = timeLine.components(separatedBy: " --> ")
+            guard timeParts.count == 2 else { continue }
+
+            let startPart = timeParts[0].components(separatedBy: " ").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            let endAndStyles = timeParts[1].components(separatedBy: " ")
+            let endPart = endAndStyles.first?.trimmingCharacters(in: .whitespaces) ?? ""
+            let styleParts = endAndStyles.dropFirst()
+
+            guard let start = parseTime(startPart), let end = parseTime(endPart) else {
                 print("Invalid timestamp format in block: \(block)")
                 continue
             }
-            
+
+            // Parse styles into a dictionary
+            var styles = [String: String]()
+            for style in styleParts {
+                let keyValue = style.components(separatedBy: ":")
+                if keyValue.count == 2 {
+                    styles[keyValue[0]] = keyValue[1]
+                }
+            }
+
             // Combine the text lines into a single string
             let text = textLines.joined(separator: "\n")
-            subtitles.append(Subtitle(startTime: start, endTime: end, text: text))
+            subtitles.append(Subtitle(startTime: start, endTime: end, text: text, styles: styles))
         }
         return subtitles
     }
