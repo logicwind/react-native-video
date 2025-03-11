@@ -71,17 +71,20 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     private var _showNotificationControls = false
     // Buffer last bitrate value received. Initialized to -2 to ensure -1 (sometimes reported by AVPlayer) is not missed
     private var _lastBitrate = -2.0
-    private var _pictureInPictureEnabled = false {
+    private var _enterPictureInPictureOnLeave = false {
         didSet {
-            #if os(iOS)
-                if _pictureInPictureEnabled {
-                    initPictureinPicture()
+            if isPictureInPictureActive() { return }
+            if _enterPictureInPictureOnLeave {
+                initPictureinPicture()
+                if #available(iOS 9.0, tvOS 14.0, *) {
                     _playerViewController?.allowsPictureInPicturePlayback = true
-                } else {
-                    _pip?.deinitPipController()
+                }
+            } else {
+                _pip?.deinitPipController()
+                if #available(iOS 9.0, tvOS 14.0, *) {
                     _playerViewController?.allowsPictureInPicturePlayback = false
                 }
-            #endif
+            }
         }
     }
 
@@ -109,9 +112,11 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         private let _videoCache: RCTVideoCachingHandler = .init()
     #endif
 
-    #if os(iOS)
-        private var _pip: RCTPictureInPicture?
-    #endif
+    private var _pip: RCTPictureInPicture?
+    
+    // MARK: - Properties for Subtitle Label
+    private var subtitleLabel: UILabel!
+    var subtitles: [Subtitle] = []
 
     // MARK: - Properties for Subtitle Label
     private var subtitleLabel: UILabel!
@@ -178,11 +183,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         onRestoreUserInterfaceForPictureInPictureStop?([:])
     }
 
-    func isPipEnabled() -> Bool {
-        return _pictureInPictureEnabled
-    }
-
-    func isPipActive() -> Bool {
+    func isPictureInPictureActive() -> Bool {
         #if os(iOS)
             return _pip?._pipController?.isPictureInPictureActive == true
         #else
@@ -192,15 +193,17 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
     func initPictureinPicture() {
         #if os(iOS)
-            _pip = RCTPictureInPicture({ [weak self] in
-                self?._onPictureInPictureEnter()
-            }, { [weak self] in
-                self?._onPictureInPictureExit()
-            }, { [weak self] in
-                self?.onRestoreUserInterfaceForPictureInPictureStop?([:])
-            })
+            if _pip == nil {
+                _pip = RCTPictureInPicture({ [weak self] in
+                    self?._onPictureInPictureEnter()
+                }, { [weak self] in
+                    self?._onPictureInPictureExit()
+                }, { [weak self] in
+                    self?.onRestoreUserInterfaceForPictureInPictureStop?([:])
+                })
+            }
 
-            if _playerLayer != nil && !_controls {
+            if _playerLayer != nil && !_controls && _pip?._pipController == nil {
                 _pip?.setupPipController(_playerLayer)
             }
         #else
@@ -212,17 +215,14 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         super.init(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
         ReactNativeVideoManager.shared.registerView(newInstance: self)
         #if USE_GOOGLE_IMA
-            _imaAdsManager = RCTIMAAdsManager(video: self, pipEnabled: isPipEnabled)
+            _imaAdsManager = RCTIMAAdsManager(video: self, isPictureInPictureActive: isPictureInPictureActive)
         #endif
 
         _eventDispatcher = eventDispatcher
 
         #if os(iOS)
-            if _pictureInPictureEnabled {
+            if _enterPictureInPictureOnLeave {
                 initPictureinPicture()
-                _playerViewController?.allowsPictureInPicturePlayback = true
-            } else {
-                _playerViewController?.allowsPictureInPicturePlayback = false
             }
         #endif
 
@@ -256,10 +256,34 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(screenWillLock),
+            name: UIApplication.protectedDataWillBecomeUnavailableNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenDidUnlock),
+            name: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(audioRouteChanged(notification:)),
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+
+        #if os(iOS)
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleRotation),
+                name: UIDevice.orientationDidChangeNotification,
+                object: nil
+            )
+        #endif
+
         _playerObserver._handlers = self
         #if USE_VIDEO_CACHING
             _videoCache.playerItemPrepareText = playerItemPrepareText
@@ -316,7 +340,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         super.init(coder: aDecoder)
         setupLabel()  /// Initialize the Subtitle label
         #if USE_GOOGLE_IMA
-            _imaAdsManager = RCTIMAAdsManager(video: self, pipEnabled: isPipEnabled)
+            _imaAdsManager = RCTIMAAdsManager(video: self, isPictureInPictureActive: isPictureInPictureActive)
         #endif
     }
 
@@ -352,6 +376,28 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     }
 
     @objc
+    func handleRotation() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            self.setNeedsLayout()
+            self.layoutIfNeeded()
+
+            if let playerViewController = self._playerViewController {
+                playerViewController.view.frame = UIScreen.main.bounds
+                playerViewController.view.setNeedsLayout()
+                playerViewController.view.layoutIfNeeded()
+
+                // Update content overlay and subviews
+                playerViewController.contentOverlayView?.frame = UIScreen.main.bounds
+                for subview in playerViewController.contentOverlayView?.subviews ?? [] {
+                    subview.frame = UIScreen.main.bounds
+                }
+            }
+        }
+    }
+
+    @objc
     func applicationWillResignActive(notification _: NSNotification!) {
         let isExternalPlaybackActive = getIsExternalPlaybackActive()
         if _playInBackground || _playWhenInactive || !_isPlaying || isExternalPlaybackActive { return }
@@ -372,8 +418,12 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
     @objc
     func applicationDidEnterBackground(notification _: NSNotification!) {
+        if !_paused && isPictureInPictureActive() {
+            _player?.play()
+            _player?.rate = _rate
+        }
         let isExternalPlaybackActive = getIsExternalPlaybackActive()
-        if !_playInBackground || isExternalPlaybackActive || isPipActive() { return }
+        if !_playInBackground || isExternalPlaybackActive || isPictureInPictureActive() { return }
         // Needed to play sound in background. See https://developer.apple.com/library/ios/qa/qa1668/_index.html
         _playerLayer?.player = nil
         _playerViewController?.player = nil
@@ -384,6 +434,24 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         self.applyModifiers()
         _playerLayer?.player = _player
         _playerViewController?.player = _player
+    }
+
+    @objc
+    func screenWillLock() {
+        let isActiveBackgroundPip = isPictureInPictureActive() && UIApplication.shared.applicationState != .active
+        if _playInBackground || !_isPlaying || !isActiveBackgroundPip { return }
+
+        _player?.pause()
+        _player?.rate = 0.0
+    }
+
+    @objc
+    func screenDidUnlock() {
+        let isActiveBackgroundPip = isPictureInPictureActive() && UIApplication.shared.applicationState != .active
+        if _paused || !isActiveBackgroundPip { return }
+
+        _player?.play()
+        _player?.rate = _rate
     }
 
     // MARK: - Audio events
@@ -772,19 +840,16 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     }
 
     @objc
-    func setPictureInPicture(_ pictureInPicture: Bool) {
+    func setEnterPictureInPictureOnLeave(_ enterPictureInPictureOnLeave: Bool) {
         #if os(iOS)
             let audioSession = AVAudioSession.sharedInstance()
             do {
                 try audioSession.setCategory(.playback)
                 try audioSession.setActive(true, options: [])
             } catch {}
-            if pictureInPicture {
-                _pictureInPictureEnabled = true
-            } else {
-                _pictureInPictureEnabled = false
+            if _enterPictureInPictureOnLeave != enterPictureInPictureOnLeave {
+                _enterPictureInPictureOnLeave = enterPictureInPictureOnLeave
             }
-            _pip?.setPictureInPicture(pictureInPicture)
         #endif
     }
 
@@ -1138,6 +1203,19 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                         self._fullscreenPlayerPresented = fullscreen
                         self._playerViewController?.autorotate = self._fullscreenAutorotate
 
+                        // update layout after entering fullscreen
+                        DispatchQueue.main.async {
+                            self._playerViewController?.view.frame = UIScreen.main.bounds
+                            self._playerViewController?.view.setNeedsLayout()
+                            self._playerViewController?.view.layoutIfNeeded()
+
+                            // update content overlay subviews
+                            self._playerViewController?.contentOverlayView?.frame = UIScreen.main.bounds
+                            for subview in self._playerViewController?.contentOverlayView?.subviews ?? [] {
+                                subview.frame = UIScreen.main.bounds
+                            }
+                        }
+
                         self.onVideoFullscreenPlayerDidPresent?(["target": self.reactTag as Any])
                     })
                 }
@@ -1148,6 +1226,12 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                 self?.videoPlayerViewControllerDidDismiss(playerViewController: _playerViewController)
             })
             setControls(_controls)
+
+            // ensure layout updates after exiting fullscreen
+            DispatchQueue.main.async {
+                self.setNeedsLayout()
+                self.layoutIfNeeded()
+            }
         }
     }
 
@@ -1183,6 +1267,13 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             let viewController: UIViewController! = self.reactViewController()
             viewController?.addChild(_playerViewController)
             self.addSubview(_playerViewController.view)
+
+            NSLayoutConstraint.activate([
+                _playerViewController.view.leadingAnchor.constraint(equalTo: self.leadingAnchor),
+                _playerViewController.view.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+                _playerViewController.view.topAnchor.constraint(equalTo: self.topAnchor),
+                _playerViewController.view.bottomAnchor.constraint(equalTo: self.bottomAnchor),
+            ])
         }
 
         _playerObserver.playerViewController = _playerViewController
@@ -1199,8 +1290,8 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
         viewController.view.frame = self.bounds
         viewController.player = player
-        if #available(tvOS 14.0, *) {
-            viewController.allowsPictureInPicturePlayback = _pictureInPictureEnabled
+        if #available(iOS 9.0, tvOS 14.0, *) {
+            viewController.allowsPictureInPicturePlayback = _enterPictureInPictureOnLeave
         }
         return viewController
     }
@@ -1221,7 +1312,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             }
             self.layer.needsDisplayOnBoundsChange = true
             #if os(iOS)
-                if _pictureInPictureEnabled {
+                if _enterPictureInPictureOnLeave {
                     _pip?.setupPipController(_playerLayer)
                 }
             #endif
@@ -1370,10 +1461,20 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         super.layoutSubviews()
         if _controls, let _playerViewController {
             _playerViewController.view.frame = bounds
+            _playerViewController.view.setNeedsLayout()
+            _playerViewController.view.layoutIfNeeded()
+
+            // ensure content overlay also resizes
+            _playerViewController.contentOverlayView?.frame = bounds
 
             // also adjust all subviews of contentOverlayView
             for subview in _playerViewController.contentOverlayView?.subviews ?? [] {
                 subview.frame = bounds
+            }
+
+            // ensure preferredContentSize is set when in fullscreen
+            if _fullscreenPlayerPresented {
+                _playerViewController.preferredContentSize = CGSize(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
             }
         } else {
             CATransaction.begin()
@@ -1617,6 +1718,9 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
         guard _isPlaying != isPlaying else { return }
         _isPlaying = isPlaying
+        if _controls {
+            _paused = !isPlaying
+        }
         onVideoPlaybackStateChanged?(["isPlaying": isPlaying, "isSeeking": self._pendingSeek == true, "target": reactTag as Any])
     }
 
@@ -1790,6 +1894,35 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
             resolve(currentTime)
         } else {
             reject("PLAYER_NOT_AVAILABLE", "Player is not initialized.", nil)
+        }
+    }
+
+    @objc
+    func enterPictureInPicture() {
+        if _pip?._pipController == nil {
+            initPictureinPicture()
+            if #available(iOS 9.0, tvOS 14.0, *) {
+                _playerViewController?.allowsPictureInPicturePlayback = true
+            }
+        }
+        _pip?.enterPictureInPicture()
+    }
+
+    @objc
+    func exitPictureInPicture() {
+        guard isPictureInPictureActive() else { return }
+
+        _pip?.exitPictureInPicture()
+        if _enterPictureInPictureOnLeave {
+            initPictureinPicture()
+            if #available(iOS 9.0, tvOS 14.0, *) {
+                _playerViewController?.allowsPictureInPicturePlayback = true
+            }
+        } else {
+            _pip?.deinitPipController()
+            if #available(iOS 9.0, tvOS 14.0, *) {
+                _playerViewController?.allowsPictureInPicturePlayback = false
+            }
         }
     }
 
