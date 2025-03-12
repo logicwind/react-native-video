@@ -118,10 +118,6 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     private var subtitleLabel: UILabel!
     var subtitles: [Subtitle] = []
 
-    // MARK: - Properties for Subtitle Label
-    private var subtitleLabel: UILabel!
-    var subtitles: [Subtitle] = []
-
     // Events
     @objc var onVideoLoadStart: RCTDirectEventBlock?
     @objc var onVideoLoad: RCTDirectEventBlock?
