@@ -30,7 +30,8 @@ class ExoPlayerView(private val context: Context) :
     FrameLayout(context, null, 0),
     AdViewProvider {
 
-    private var surfaceView: View? = null
+    var surfaceView: View? = null
+        private set
     private var shutterView: View
     private var subtitleLayout: SubtitleView
     private var layout: AspectRatioFrameLayout
@@ -287,7 +288,9 @@ class ExoPlayerView(private val context: Context) :
             if (group.type == C.TRACK_TYPE_VIDEO && group.length > 0) {
                 // get the first track of the group to identify aspect ratio
                 val format = group.getTrackFormat(0)
-                layout.updateAspectRatio(format)
+                if (format.width > 0 || format.height > 0) {
+                    layout.updateAspectRatio(format)
+                }
                 return
             }
         }

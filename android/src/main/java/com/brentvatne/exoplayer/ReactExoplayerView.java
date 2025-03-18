@@ -10,6 +10,8 @@ import static androidx.media3.common.C.TIME_END_OF_SOURCE;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.PictureInPictureParams;
+import android.app.RemoteAction;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Context;
@@ -24,6 +26,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.text.TextUtils;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.CaptioningManager;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -122,6 +125,7 @@ import com.brentvatne.react.R;
 import com.brentvatne.react.ReactNativeVideoManager;
 import com.brentvatne.receiver.AudioBecomingNoisyReceiver;
 import com.brentvatne.receiver.BecomingNoisyListener;
+import com.brentvatne.receiver.PictureInPictureReceiver;
 import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.UiThreadUtil;
@@ -202,6 +206,8 @@ public class ReactExoplayerView extends FrameLayout implements
     private boolean isPaused;
     private boolean isBuffering;
     private boolean muted = false;
+    public boolean enterPictureInPictureOnLeave = false;
+    private PictureInPictureParams.Builder pictureInPictureParamsBuilder;
     private boolean hasAudioFocus = false;
     private float rate = 1f;
     private AudioOutput audioOutput = AudioOutput.SPEAKER;
@@ -212,13 +218,15 @@ public class ReactExoplayerView extends FrameLayout implements
     private boolean selectTrackWhenReady = false;
     private final Handler mainHandler;
     private Runnable mainRunnable;
+    private Runnable pipListenerUnsubscribe;
     private boolean useCache = false;
     private ControlsConfig controlsConfig = new ControlsConfig();
+    private ArrayList<Integer> rootViewChildrenOriginalVisibility = new ArrayList<Integer>();
 
     /*
-    * When user is seeking first called is on onPositionDiscontinuity -> DISCONTINUITY_REASON_SEEK
-    * Then we set if to false when playback is back in onIsPlayingChanged -> true
-    */
+     * When user is seeking first called is on onPositionDiscontinuity -> DISCONTINUITY_REASON_SEEK
+     * Then we set if to false when playback is back in onIsPlayingChanged -> true
+     */
     private boolean isSeeking = false;
     private long seekPosition = -1;
 
@@ -237,7 +245,7 @@ public class ReactExoplayerView extends FrameLayout implements
     private boolean disableDisconnectError;
     private boolean preventsDisplaySleepDuringVideoPlayback = true;
     private float mProgressUpdateInterval = 250.0f;
-    private boolean playInBackground = false;
+    protected boolean playInBackground = false;
     private boolean mReportBandwidth = false;
     private boolean controls;
 
@@ -248,6 +256,7 @@ public class ReactExoplayerView extends FrameLayout implements
     private final ThemedReactContext themedReactContext;
     private final AudioManager audioManager;
     private final AudioBecomingNoisyReceiver audioBecomingNoisyReceiver;
+    private final PictureInPictureReceiver pictureInPictureReceiver;
     private final AudioManager.OnAudioFocusChangeListener audioFocusChangeListener;
 
     // store last progress event values to avoid sending unnecessary messages
@@ -314,13 +323,18 @@ public class ReactExoplayerView extends FrameLayout implements
         this.eventEmitter = new VideoEventEmitter();
         this.config = config;
         this.bandwidthMeter = config.getBandwidthMeter();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && pictureInPictureParamsBuilder == null) {
+            this.pictureInPictureParamsBuilder = new PictureInPictureParams.Builder();
+        }
         mainHandler = new Handler();
+
         createViews();
 
         audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         themedReactContext.addLifecycleEventListener(this);
         audioBecomingNoisyReceiver = new AudioBecomingNoisyReceiver(themedReactContext);
         audioFocusChangeListener = new OnAudioFocusChangedListener(this, themedReactContext);
+        pictureInPictureReceiver = new PictureInPictureReceiver(this, themedReactContext);
     }
 
     private boolean isPlayingAd() {
@@ -336,10 +350,19 @@ public class ReactExoplayerView extends FrameLayout implements
                 LayoutParams.MATCH_PARENT,
                 LayoutParams.MATCH_PARENT);
         exoPlayerView = new ExoPlayerView(getContext());
+        exoPlayerView.addOnLayoutChangeListener( (View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) ->
+                PictureInPictureUtil.applySourceRectHint(themedReactContext, pictureInPictureParamsBuilder, exoPlayerView)
+        );
         exoPlayerView.setLayoutParams(layoutParams);
         addView(exoPlayerView, 0, layoutParams);
 
         exoPlayerView.setFocusable(this.focusable);
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        cleanupPlaybackService();
+        super.onDetachedFromWindow();
     }
 
     // LifecycleEventListener implementation
@@ -354,7 +377,10 @@ public class ReactExoplayerView extends FrameLayout implements
     @Override
     public void onHostPause() {
         isInBackground = true;
-        if (playInBackground) {
+        Activity activity = themedReactContext.getCurrentActivity();
+        boolean isInPictureInPicture = Util.SDK_INT >= Build.VERSION_CODES.N && activity != null && activity.isInPictureInPictureMode();
+        boolean isInMultiWindowMode = Util.SDK_INT >= Build.VERSION_CODES.N && activity != null && activity.isInMultiWindowMode();
+        if (playInBackground || isInPictureInPicture || isInMultiWindowMode) {
             return;
         }
         setPlayWhenReady(false);
@@ -363,12 +389,6 @@ public class ReactExoplayerView extends FrameLayout implements
     @Override
     public void onHostDestroy() {
         cleanUpResources();
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        cleanupPlaybackService();
-        super.onDetachedFromWindow();
     }
 
     public void cleanUpResources() {
@@ -755,6 +775,8 @@ public class ReactExoplayerView extends FrameLayout implements
                 if (player == null) {
                     // Initialize core configuration and listeners
                     initializePlayerCore(self);
+                    pipListenerUnsubscribe = PictureInPictureUtil.addLifecycleEventListener(themedReactContext, this);
+                    PictureInPictureUtil.applyAutoEnterEnabled(themedReactContext, pictureInPictureParamsBuilder, this.enterPictureInPictureOnLeave);
                 }
                 if (!source.isLocalAssetFile() && !source.isAsset() && source.getBufferConfig().getCacheSize() > 0) {
                     RNVSimpleCache.INSTANCE.setSimpleCache(
@@ -859,6 +881,7 @@ public class ReactExoplayerView extends FrameLayout implements
         exoPlayerView.setPlayer(player);
 
         audioBecomingNoisyReceiver.setListener(self);
+        pictureInPictureReceiver.setListener();
         bandwidthMeter.addEventListener(new Handler(), self);
         setPlayWhenReady(!isPaused);
         playerNeedsSource = true;
@@ -922,7 +945,7 @@ public class ReactExoplayerView extends FrameLayout implements
                             : (e.reason == UnsupportedDrmException.REASON_UNSUPPORTED_SCHEME
                             ? R.string.error_drm_unsupported_scheme : R.string.error_drm_unknown);
                     eventEmitter.onVideoError.invoke(getResources().getString(errorStringId), e, "3003");
-                        }
+                }
             }
         }
         return drmSessionManager;
@@ -1257,12 +1280,12 @@ public class ReactExoplayerView extends FrameLayout implements
 
         for (SideLoadedTextTrack track : source.getSideLoadedTextTracks().getTracks()) {
             MediaItem.SubtitleConfiguration subtitleConfiguration = new MediaItem.SubtitleConfiguration.Builder(track.getUri())
-                .setMimeType(track.getType())
-                .setLanguage(track.getLanguage())
-                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
-                .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
-                .setLabel(track.getTitle())
-                .build();
+                    .setMimeType(track.getType())
+                    .setLanguage(track.getLanguage())
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .setRoleFlags(C.ROLE_FLAG_SUBTITLE)
+                    .setLabel(track.getTitle())
+                    .build();
             subtitleConfigurations.add(subtitleConfiguration);
         }
 
@@ -1283,6 +1306,10 @@ public class ReactExoplayerView extends FrameLayout implements
             updateResumePosition();
             player.release();
             player.removeListener(this);
+            PictureInPictureUtil.applyAutoEnterEnabled(themedReactContext, pictureInPictureParamsBuilder, false);
+            if (pipListenerUnsubscribe != null) {
+                pipListenerUnsubscribe.run();
+            }
             trackSelector = null;
 
             ReactNativeVideoManager.Companion.getInstance().onInstanceRemoved(instanceId, player);
@@ -1295,6 +1322,7 @@ public class ReactExoplayerView extends FrameLayout implements
         }
         progressHandler.removeMessages(SHOW_PROGRESS);
         audioBecomingNoisyReceiver.removeListener();
+        pictureInPictureReceiver.removeListener();
         bandwidthMeter.removeEventListener(this);
 
         if (mainHandler != null && mainRunnable != null) {
@@ -1813,7 +1841,7 @@ public class ReactExoplayerView extends FrameLayout implements
         if (isPlaying && isSeeking) {
             eventEmitter.onVideoSeek.invoke(player.getCurrentPosition(), seekPosition);
         }
-
+        PictureInPictureUtil.applyPlayingStatus(themedReactContext, pictureInPictureParamsBuilder, pictureInPictureReceiver, !isPlaying);
         eventEmitter.onVideoPlaybackStateChanged.invoke(isPlaying, isSeeking);
 
         if (isPlaying) {
@@ -1907,8 +1935,6 @@ public class ReactExoplayerView extends FrameLayout implements
             eventEmitter.onTextTrackDataChanged.invoke(subtitleText);
         }
     }
-
-    // ReactExoplayerViewManager public api
 
     public void setSrc(Source source) {
         if (source.getUri() != null) {
@@ -2224,6 +2250,87 @@ public class ReactExoplayerView extends FrameLayout implements
             } else {
                 pausePlayback();
             }
+        }
+    }
+
+    public void setEnterPictureInPictureOnLeave(boolean enterPictureInPictureOnLeave) {
+        this.enterPictureInPictureOnLeave = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && enterPictureInPictureOnLeave;
+        if (player != null) {
+            PictureInPictureUtil.applyAutoEnterEnabled(themedReactContext, pictureInPictureParamsBuilder, this.enterPictureInPictureOnLeave);
+        }
+    }
+
+    protected void setIsInPictureInPicture(boolean isInPictureInPicture) {
+        eventEmitter.onPictureInPictureStatusChanged.invoke(isInPictureInPicture);
+
+        if (fullScreenPlayerView != null && fullScreenPlayerView.isShowing()) {
+            if (isInPictureInPicture) fullScreenPlayerView.hideWithoutPlayer();
+            return;
+        }
+
+        Activity currentActivity = themedReactContext.getCurrentActivity();
+        if (currentActivity == null) return;
+
+        View decorView = currentActivity.getWindow().getDecorView();
+        ViewGroup rootView = decorView.findViewById(android.R.id.content);
+
+        LayoutParams layoutParams = new LayoutParams(
+                LayoutParams.MATCH_PARENT,
+                LayoutParams.MATCH_PARENT);
+
+        if (isInPictureInPicture) {
+            ViewGroup parent = (ViewGroup)exoPlayerView.getParent();
+            if (parent != null) {
+                parent.removeView(exoPlayerView);
+            }
+            for (int i = 0; i < rootView.getChildCount(); i++) {
+                if (rootView.getChildAt(i) != exoPlayerView) {
+                    rootViewChildrenOriginalVisibility.add(rootView.getChildAt(i).getVisibility());
+                    rootView.getChildAt(i).setVisibility(View.GONE);
+                }
+            }
+            rootView.addView(exoPlayerView, layoutParams);
+        } else {
+            rootView.removeView(exoPlayerView);
+            if (!rootViewChildrenOriginalVisibility.isEmpty()) {
+                for (int i = 0; i < rootView.getChildCount(); i++) {
+                    rootView.getChildAt(i).setVisibility(rootViewChildrenOriginalVisibility.get(i));
+                }
+                addView(exoPlayerView, 0, layoutParams);
+            }
+        }
+    }
+
+    public void enterPictureInPictureMode() {
+        PictureInPictureParams _pipParams = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ArrayList<RemoteAction> actions = PictureInPictureUtil.getPictureInPictureActions(themedReactContext, isPaused, pictureInPictureReceiver);
+            pictureInPictureParamsBuilder.setActions(actions);
+            if (player.getPlaybackState() == Player.STATE_READY) {
+                pictureInPictureParamsBuilder.setAspectRatio(PictureInPictureUtil.calcPictureInPictureAspectRatio(player));
+            }
+            _pipParams = pictureInPictureParamsBuilder.build();
+        }
+        PictureInPictureUtil.enterPictureInPictureMode(themedReactContext, _pipParams);
+    }
+
+    public void exitPictureInPictureMode() {
+        Activity currentActivity = themedReactContext.getCurrentActivity();
+        if (currentActivity == null) return;
+
+        View decorView = currentActivity.getWindow().getDecorView();
+        ViewGroup rootView = decorView.findViewById(android.R.id.content);
+
+        if (!rootViewChildrenOriginalVisibility.isEmpty()) {
+            if (exoPlayerView.getParent().equals(rootView)) rootView.removeView(exoPlayerView);
+            for (int i = 0; i < rootView.getChildCount(); i++) {
+                rootView.getChildAt(i).setVisibility(rootViewChildrenOriginalVisibility.get(i));
+            }
+            rootViewChildrenOriginalVisibility.clear();
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && currentActivity.isInPictureInPictureMode()) {
+            currentActivity.moveTaskToBack(false);
         }
     }
 

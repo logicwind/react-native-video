@@ -1,4 +1,5 @@
 import React from 'react';
+import TWGBadge from './components/TWGBadge/TWGBadge';
 
 export default {
   head: (
@@ -26,12 +27,6 @@ export default {
         content="https://docs.thewidlarzgroup.com/react-native-video/thumbnail.jpg"
       />
       <meta name="twitter:image:alt" content="React Native Video" />
-      <link rel="preconnect" href="https://fonts.googleapis.com" />
-      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin />
-      <link
-        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400..900&display=swap"
-        rel="stylesheet"
-      />
       <link
         rel="icon"
         type="image/png"
@@ -39,13 +34,15 @@ export default {
       />
       <script
         async
-        src="https://www.googletagmanager.com/gtag/js?id=G-PM2TQQQMDN"
+        src="https://www.googletagmanager.com/gtag/js?id=G-4YEWQH5ZHS"
       />
       <script>
-        {`window.dataLayer = window.dataLayer || [];
-        function gtag(){dataLayer.push(arguments);}
-        gtag('js', new Date());
-        gtag('config', 'G-PM2TQQQMDN');`}
+        {`
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-4YEWQH5ZHS');
+        `}
       </script>
     </>
   ),
@@ -59,66 +56,21 @@ export default {
   },
   docsRepositoryBase:
     'https://github.com/TheWidlarzGroup/react-native-video/tree/master/docs/',
+  main: ({children}) => (
+    <>
+      {children}
+      <TWGBadge visibleOnLarge={false} />
+    </>
+  ),
+  toc: {
+    extraContent: <TWGBadge visibleOnLarge={true} />,
+  },
   footer: {
     text: (
       <span>
-        Built with ❤️ by <strong>React Native Community</strong>
+        Built with ❤️ by <strong>TheWidlarzGroup</strong> &{' '}
+        <strong>React Native Community</strong>
       </span>
-    ),
-  },
-  toc: {
-    extraContent: (
-      <>
-        <style>{`
-        :is(html[class~=dark]) .extra-container {
-          background-color: #87ccef;
-        }
-        :is(html[class~=dark]) .extra-text {
-          color: #171717;
-        }
-        :is(html[class~=dark]) .extra-button {
-          background-color: #171717;
-        }
-        .extra-container {
-          display: flex;
-          flex-direction: column;
-          margin-top: 0.5rem;
-          text-align: center;
-          background-color: #171717;
-          padding: 1rem;
-          gap: 1rem;
-          border-radius: 0.5rem;
-        }
-        .extra-text {
-          padding-left: 0.5rem;
-          padding-right: 0.5rem;
-          font-weight: bold;
-          color: #fff;
-        }
-        .extra-button {
-          width: 100%;
-          border: none;
-          padding: 0.5rem 1rem;
-          font-weight: 500;
-          background-color: #f9d85b;
-          transition: transform 0.3s ease, background-color 0.3s ease;
-        }
-        .extra-button:hover {
-          transform: scale(1.05);
-          background-color: #fff;
-        }
-      `}</style>
-        <div className="extra-container">
-          <span className="extra-text">We are TheWidlarzGroup</span>
-          <a
-            target="_blank"
-            href="https://www.thewidlarzgroup.com/?utm_source=rnv&utm_medium=docs#Contact"
-            className="extra-button"
-            rel="noreferrer">
-            Premium support →
-          </a>
-        </div>
-      </>
     ),
   },
 
