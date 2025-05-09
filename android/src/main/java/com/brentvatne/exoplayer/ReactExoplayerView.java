@@ -2469,6 +2469,7 @@ public class ReactExoplayerView extends FrameLayout implements
         }
     }
 
+    // https://github.com/TheWidlarzGroup/react-native-video/issues/4488
     protected void setIsInPictureInPicture(boolean isInPictureInPicture) {
         eventEmitter.onPictureInPictureStatusChanged.invoke(isInPictureInPicture);
 
@@ -2483,28 +2484,48 @@ public class ReactExoplayerView extends FrameLayout implements
         View decorView = currentActivity.getWindow().getDecorView();
         ViewGroup rootView = decorView.findViewById(android.R.id.content);
 
+        if (rootView == null) return;
+
         LayoutParams layoutParams = new LayoutParams(
                 LayoutParams.MATCH_PARENT,
                 LayoutParams.MATCH_PARENT);
 
         if (isInPictureInPicture) {
-            ViewGroup parent = (ViewGroup)exoPlayerView.getParent();
-            if (parent != null) {
+            ViewGroup parent = (ViewGroup) exoPlayerView.getParent();
+            if (parent != null && parent != rootView) {
                 parent.removeView(exoPlayerView);
             }
-            for (int i = 0; i < rootView.getChildCount(); i++) {
-                if (rootView.getChildAt(i) != exoPlayerView) {
-                    rootViewChildrenOriginalVisibility.add(rootView.getChildAt(i).getVisibility());
-                    rootView.getChildAt(i).setVisibility(View.GONE);
-                }
-            }
-            rootView.addView(exoPlayerView, layoutParams);
-        } else {
-            rootView.removeView(exoPlayerView);
-            if (!rootViewChildrenOriginalVisibility.isEmpty()) {
+            if (exoPlayerView.getParent() == null) {
+                rootViewChildrenOriginalVisibility.clear(); // Clear before storing new values
+
+                // Store visibility of all children EXCEPT the exoPlayerView
                 for (int i = 0; i < rootView.getChildCount(); i++) {
-                    rootView.getChildAt(i).setVisibility(rootViewChildrenOriginalVisibility.get(i));
+                    View child = rootView.getChildAt(i);
+                    if (child != exoPlayerView) {
+                        rootViewChildrenOriginalVisibility.add(child.getVisibility());
+                        child.setVisibility(View.GONE);
+                    }
                 }
+                rootView.addView(exoPlayerView, layoutParams);
+            }
+        } else {
+            if (exoPlayerView.getParent() == rootView) {
+                rootView.removeView(exoPlayerView);
+            }
+
+            // Copy the list before restoring to prevent ConcurrentModificationException
+            List<Integer> visibilityCopy = new ArrayList<>(rootViewChildrenOriginalVisibility);
+            rootViewChildrenOriginalVisibility.clear();
+
+            // Restore visibility safely
+            int restoreCount = Math.min(visibilityCopy.size(), rootView.getChildCount());
+            for (int i = 0; i < restoreCount; i++) {
+                if (i >= rootView.getChildCount()) break; // Prevent IndexOutOfBoundsException
+                rootView.getChildAt(i).setVisibility(visibilityCopy.get(i));
+            }
+
+            rootViewChildrenOriginalVisibility.clear(); // Clear after restoring to prevent stale data
+            if (exoPlayerView.getParent() == null) { // Double-check before adding
                 addView(exoPlayerView, 0, layoutParams);
                 reLayoutControls();
             }
