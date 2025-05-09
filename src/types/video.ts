@@ -145,6 +145,7 @@ export type BufferConfig = {
   maxHeapAllocationPercent?: number;
   minBackBufferMemoryReservePercent?: number;
   minBufferMemoryReservePercent?: number;
+  initialBitrate?: number; // Android
   cacheSizeMB?: number;
   live?: BufferConfigLive;
 };
@@ -349,4 +350,5 @@ export interface ReactVideoProps extends ReactVideoEvents, ViewProps {
   debug?: DebugConfig;
   allowsExternalPlayback?: boolean; // iOS
   controlsStyles?: ControlsStyles; // Android
+  disableAudioSessionManagement?: boolean; // iOS
 }
