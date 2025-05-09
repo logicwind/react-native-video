@@ -1,5 +1,6 @@
 import React from 'react';
 import TWGBadge from './components/TWGBadge/TWGBadge';
+import jsonLd from './json-ld.json';
 
 export default {
   head: (
@@ -29,21 +30,25 @@ export default {
       <meta name="twitter:image:alt" content="React Native Video" />
       <link
         rel="icon"
+        type="image/x-icon"
+        href="https://docs.thewidlarzgroup.com/react-native-video/favicon.ico"
+      />
+      <link
+        rel="icon"
         type="image/png"
-        href="https://docs.thewidlarzgroup.com/react-native-video/favicon.png"
+        sizes="32x32"
+        href="https://docs.thewidlarzgroup.com/react-native-video/favicon-32x32.png"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="https://docs.thewidlarzgroup.com/react-native-video/favicon-16x16.png"
       />
       <script
-        async
-        src="https://www.googletagmanager.com/gtag/js?id=G-4YEWQH5ZHS"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{__html: JSON.stringify(jsonLd)}}
       />
-      <script>
-        {`
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', 'G-4YEWQH5ZHS');
-        `}
-      </script>
     </>
   ),
   logo: (
