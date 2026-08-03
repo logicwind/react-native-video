@@ -6,6 +6,14 @@ import Foundation
 #endif
 import React
 
+// MARK: - Subtitle Model
+struct Subtitle {
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+    let text: String
+    let styles: [String: String]
+}
+
 // MARK: - RCTVideo
 
 class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverHandler {
@@ -102,6 +110,10 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
 
     private var _pip: RCTPictureInPicture?
     private var _isPictureInPictureActive = false
+
+    // MARK: - Properties for Subtitle Label
+    private var subtitleLabel: UILabel!
+    var subtitles: [Subtitle] = []
 
     // Events
     @objc var onVideoLoadStart: RCTDirectEventBlock?
@@ -275,8 +287,51 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         #endif
     }
 
+    // MARK: - Calculate responsive font size
+    func responsiveSize(_ size: CGFloat, factor: CGFloat = 0.5) -> CGFloat {
+        let screenWidth = UIScreen.main.bounds.width
+        let referenceScreenWidth: CGFloat = 375.0 // Base reference width (e.g., iPhone 12 Mini)
+        let scaledSize = size * (screenWidth / referenceScreenWidth)
+        return size + (scaledSize - size) * factor
+    }
+
+    // MARK: - Setup label to display Subtitles
+    private func setupLabel() {
+        subtitleLabel = UILabel()
+        subtitleLabel?.textColor = .white
+        subtitleLabel?.font = UIFont.systemFont(ofSize: responsiveSize(11.0))
+        subtitleLabel?.textAlignment = .center
+        subtitleLabel?.numberOfLines = 0
+        subtitleLabel?.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+        subtitleLabel?.layer.cornerRadius = 5
+        subtitleLabel?.layer.masksToBounds = true
+        subtitleLabel?.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(subtitleLabel!)
+
+        bringSubviewToFront(subtitleLabel!)
+
+        NSLayoutConstraint.activate([
+            subtitleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -responsiveSize(15.0)),
+            subtitleLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.8),
+            subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: responsiveSize(20.0))
+        ])
+
+        layoutSubviews()
+        setNeedsLayout()
+        layoutIfNeeded()
+    }
+
+    // MARK: - For Subtitle Label
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupLabel() /// Initialize the Subtitle label
+    }
+
     required init?(coder aDecoder: NSCoder) {
         super.init(coder: aDecoder)
+        setupLabel() /// Initialize the Subtitle label
         #if USE_GOOGLE_IMA
             _imaAdsManager = RCTIMAAdsManager(video: self, isPictureInPictureActive: isPictureInPictureActive)
         #endif
@@ -1054,11 +1109,51 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         setSelectedTextTrack(SelectedTrackCriteria(selectedTextTrack))
     }
 
+    // MARK: - Setup and Fetch Text Tracks from URI
+    private func setupAndFetchTextTracks() {
+        guard let source = _source else { return }
+        if source.textTracks.count > 0, let selectedValue = _selectedTextTrackCriteria.value {
+            if selectedValue == "disabled" || selectedValue == "off" {
+                self.subtitleLabel?.isHidden = true
+                subtitles = []
+            } else if selectedValue != "auto" {
+                self.subtitleLabel?.isHidden = false
+                if let selectedTextTrack = source.textTracks.first(where: { $0.title == selectedValue }) {
+                    let subtitleUri = selectedTextTrack.uri
+                    guard let subtitleUrl = URL(string: subtitleUri) else { return }
+                    self.fetchSubtitles(from: subtitleUrl) { [weak self] result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let content):
+                                self?.subtitles = self?.parseVTT(content) ?? []
+                                DispatchQueue.main.async {
+                                    self?.addTimeObserver()
+                                }
+                            case .failure(let error):
+                                print("Failed to fetch subtitles: \(error)")
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.subtitleLabel?.isHidden = true
+                subtitles = []
+            }
+        }
+    }
+
     func setSelectedTextTrack(_ selectedTextTrack: SelectedTrackCriteria?) {
         _selectedTextTrackCriteria = selectedTextTrack ?? SelectedTrackCriteria.none()
         guard let source = _source else { return }
         if !source.textTracks.isEmpty { // sideloaded text tracks
-            RCTPlayerOperations.setSideloadedText(player: _player, textTracks: source.textTracks, criteria: _selectedTextTrackCriteria)
+            if let uri = _source?.uri {
+                /// Check for URL and Custom TextTracks as it won't work with HLS playlist https://docs.thewidlarzgroup.com/react-native-video/component/props#texttracks-1
+                if uri.contains("m3u8") && source.textTracks.count > 0 {
+                    self.setupAndFetchTextTracks()
+                } else {
+                    RCTPlayerOperations.setSideloadedText(player: _player, textTracks: source.textTracks, criteria: _selectedTextTrackCriteria)
+                }
+            }
         } else { // text tracks included in the HLS playlist
             Task { [weak self] in
                 guard let self,
@@ -1261,6 +1356,8 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                     self._playerViewController = nil
                     self._playerObserver.playerViewController = nil
                     self.usePlayerLayer()
+
+                    self.setupLabel() /// Initialize the Subtitle label
                 }
             }
         }
@@ -1891,6 +1988,161 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     /// Workaround for #3418 - https://github.com/TheWidlarzGroup/react-native-video/issues/3418#issuecomment-2043508862
     @objc
     func setOnClick(_: Any) {}
+
+    // MARK: - Time observer to Update subtiles
+    func addTimeObserver() {
+        let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+        _player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            self?.updateSubtitles(for: time)
+        }
+    }
+
+    // MARK: - Update Subtitles based on playing time
+    func updateSubtitles(for time: CMTime) {
+        let currentTime = CMTimeGetSeconds(time)
+        if let subtitle = subtitles.first(where: { $0.startTime <= currentTime && $0.endTime >= currentTime }) {
+            subtitleLabel?.removeFromSuperview()
+            subtitleLabel?.text = subtitle.text
+
+            // Extract styles
+            var bottomMarginPercentage: CGFloat = 15.0 // Default bottom margin
+            var widthPercentage: CGFloat = 0.8 // Default width multiplier
+
+            if let size = subtitle.styles["size"], let width = Double(size.replacingOccurrences(of: "%", with: "")) {
+                widthPercentage = CGFloat(width / 100.0)
+            }
+
+            if let position = subtitle.styles["position"], let positionValue = Double(position.replacingOccurrences(of: "%", with: "")) {
+                bottomMarginPercentage = self.frame.height * CGFloat(positionValue) / 100.0
+            }
+
+            self.addSubview(subtitleLabel)
+
+            if let align = subtitle.styles["align"] {
+                switch align {
+                case "start":
+                    subtitleLabel.textAlignment = .left
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = true
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = false
+                case "end":
+                    subtitleLabel.textAlignment = .right
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = true
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = false
+                default:
+                    subtitleLabel.textAlignment = .center
+                    subtitleLabel.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: responsiveSize(15.0)).isActive = false
+                    subtitleLabel.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -responsiveSize(15.0)).isActive = false
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = true
+                    break
+                }
+            } else {
+                subtitleLabel.textAlignment = .center
+                subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor).isActive = true
+            }
+
+            // Apply constraints
+            let bottomConstraint = subtitleLabel.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -responsiveSize(bottomMarginPercentage))
+            let widthConstraint = subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: self.widthAnchor, multiplier: widthPercentage)
+
+            subtitleLabel?.setNeedsLayout()
+            subtitleLabel?.layoutIfNeeded()
+            subtitleLabel?.isHidden = false
+
+            NSLayoutConstraint.activate([
+                bottomConstraint,
+                widthConstraint,
+                subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 20.0)
+            ])
+        } else {
+            subtitleLabel?.isHidden = true
+        }
+    }
+
+    // MARK: - Fetch Text Tracks form the URL
+    func fetchSubtitles(from url: URL, completion: @escaping (Result<String, Error>) -> Void) {
+        let task = URLSession.shared.dataTask(with: url) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            guard let data = data, let content = String(data: data, encoding: .utf8) else {
+                completion(.failure(NSError(domain: "Invalid Data", code: 0, userInfo: nil)))
+                return
+            }
+            completion(.success(content))
+        }
+        task.resume()
+    }
+
+    // MARK: - Parse VTT
+    func parseVTT(_ content: String) -> [Subtitle] {
+        var subtitles = [Subtitle]()
+        let blocks = content.components(separatedBy: "\n\n") // Split into subtitle blocks
+
+        for block in blocks {
+            let lines = block.components(separatedBy: "\n").filter { !$0.isEmpty }
+            guard !lines.isEmpty else { continue }
+
+            var timeLine: String
+            var textLines: [String]
+
+            // Check if the block starts with an index
+            if let _ = Int(lines[0]) {
+                // Block includes an index line
+                guard lines.count >= 3 else { continue }
+                timeLine = lines[1] // Second line contains the timestamps (with possible settings)
+                textLines = Array(lines[2...]) // Remaining lines contain the subtitle text
+            } else {
+                // Block does not include an index line
+                guard lines.count >= 2 else { continue }
+                timeLine = lines[0] // First line contains the timestamps (with possible settings)
+                textLines = Array(lines[1...]) // Remaining lines contain the subtitle text
+            }
+
+            // Extract the timestamps and styles from the timeline
+            let timeParts = timeLine.components(separatedBy: " --> ")
+            guard timeParts.count == 2 else { continue }
+
+            let startPart = timeParts[0].components(separatedBy: " ").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            let endAndStyles = timeParts[1].components(separatedBy: " ")
+            let endPart = endAndStyles.first?.trimmingCharacters(in: .whitespaces) ?? ""
+            let styleParts = endAndStyles.dropFirst()
+
+            guard let start = parseTime(startPart), let end = parseTime(endPart) else {
+                print("Invalid timestamp format in block: \(block)")
+                continue
+            }
+
+            // Parse styles into a dictionary
+            var styles = [String: String]()
+            for style in styleParts {
+                let keyValue = style.components(separatedBy: ":")
+                if keyValue.count == 2 {
+                    styles[keyValue[0]] = keyValue[1]
+                }
+            }
+
+            // Combine the text lines into a single string
+            let text = textLines.joined(separator: "\n")
+            subtitles.append(Subtitle(startTime: start, endTime: end, text: text, styles: styles))
+        }
+        return subtitles
+    }
+
+    // MARK: - Parse Time for WebVTT Time Format
+    func parseTime(_ timeString: String) -> TimeInterval? {
+        // WebVTT time format: HH:MM:SS.MMM (or MM:SS.MMM for short)
+        let parts = timeString.components(separatedBy: ":")
+        guard parts.count >= 2 else { return nil } // Must have at least MM:SS
+        let secondsParts = parts.last?.components(separatedBy: ".") ?? []
+        let hours = parts.count == 3 ? Double(parts[0]) ?? 0 : 0
+        let minutes = Double(parts[parts.count - 2]) ?? 0
+        let seconds = Double(secondsParts[0]) ?? 0
+        let milliseconds = secondsParts.count == 2 ? Double("0." + secondsParts[1]) ?? 0 : 0
+        return (hours * 3600) + (minutes * 60) + seconds + milliseconds
+    }
 }
 
 // MARK: - DAI Support
