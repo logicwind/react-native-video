@@ -1145,7 +1145,19 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     func setSelectedTextTrack(_ selectedTextTrack: SelectedTrackCriteria?) {
         _selectedTextTrackCriteria = selectedTextTrack ?? SelectedTrackCriteria.none()
         guard let source = _source else { return }
-        if !source.textTracks.isEmpty { // sideloaded text tracks
+
+        // Whether the *selected* track is actually one we sideloaded - not just whether this
+        // source happens to have any sideloaded tracks at all. A video can have both sideloaded
+        // (source.textTracks) and manifest-incorporated tracks at once; picking an incorporated
+        // one (e.g. an embedded "English" track) must still fall through to the .legible
+        // AVMediaSelectionGroup path below, even though source.textTracks is non-empty.
+        let criteriaValue = _selectedTextTrackCriteria.value
+        let matchesSideloadedTrack = !source.textTracks.isEmpty && criteriaValue != nil && source.textTracks.contains {
+            (_selectedTextTrackCriteria.type == "language" && $0.language == criteriaValue) ||
+                (_selectedTextTrackCriteria.type == "title" && $0.title == criteriaValue)
+        }
+
+        if matchesSideloadedTrack { // sideloaded text tracks
             if let uri = _source?.uri {
                 /// Check for URL and Custom TextTracks as it won't work with HLS playlist https://docs.thewidlarzgroup.com/react-native-video/component/props#texttracks-1
                 if uri.contains("m3u8") && source.textTracks.count > 0 {
@@ -1154,7 +1166,12 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                     RCTPlayerOperations.setSideloadedText(player: _player, textTracks: source.textTracks, criteria: _selectedTextTrackCriteria)
                 }
             }
-        } else { // text tracks included in the HLS playlist
+        } else { // text tracks included in the HLS playlist (or disabling/"off")
+            // Clear any custom-rendered sideloaded subtitle so it doesn't linger on screen
+            // underneath/alongside the manifest-incorporated track now being selected.
+            self.subtitleLabel?.isHidden = true
+            self.subtitles = []
+
             Task { [weak self] in
                 guard let self,
                       let player = self._player else { return }
@@ -1706,7 +1723,11 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                                        "orientation": orientation,
                                    ],
                                    "audioTracks": audioTracks,
-                                   "textTracks": extractJsonWithIndex(from: source.textTracks) ?? textTracks.map(\.json),
+                                   // Merge sideloaded (source.textTracks) with tracks incorporated in the
+                                   // manifest itself (textTracks, from AVMediaSelectionGroup) - using ??
+                                   // here previously meant sideloading anything at all silently hid every
+                                   // embedded/manifest track from this event.
+                                   "textTracks": extractJsonWithIndex(from: source.textTracks + textTracks) ?? [],
                                    "target": self.reactTag as Any])
             }
 
@@ -1910,7 +1931,9 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
         if onTextTracks != nil {
             Task {
                 let textTracks = await RCTVideoUtils.getTextTrackInfo(self._player)
-                self.onTextTracks?(["textTracks": extractJsonWithIndex(from: source.textTracks) ?? textTracks.compactMap(\.json)])
+                // See handleReadyToPlay() - merge sideloaded + manifest-incorporated tracks rather
+                // than picking one or the other.
+                self.onTextTracks?(["textTracks": extractJsonWithIndex(from: source.textTracks + textTracks) ?? []])
             }
         }
 
@@ -1923,9 +1946,31 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
     }
 
     func handleLegibleOutput(strings: [NSAttributedString]) {
-        guard onTextTrackDataChanged != nil else { return }
+        // Cues for a manifest-incorporated text track (selected via .legible AVMediaSelectionGroup,
+        // see setSelectedTextTrack) arrive here from AVPlayerItemLegibleOutput. This used to only
+        // forward them to onTextTrackDataChanged, which nothing in JS listens to - subtitleLabel
+        // (the only on-screen subtitle surface in this app) was otherwise only ever driven by the
+        // sideloaded-track pipeline's own manual VTT fetch + time observer (updateSubtitles). Render
+        // incorporated-track cues onto that same label so both kinds of tracks actually display.
+        let cueText = strings.first?.string ?? ""
+        if !cueText.isEmpty {
+            if subtitleLabel?.superview == nil {
+                self.addSubview(subtitleLabel)
+                NSLayoutConstraint.activate([
+                    subtitleLabel.bottomAnchor.constraint(equalTo: self.bottomAnchor, constant: -responsiveSize(15.0)),
+                    subtitleLabel.centerXAnchor.constraint(equalTo: self.centerXAnchor),
+                    subtitleLabel.widthAnchor.constraint(lessThanOrEqualTo: self.widthAnchor, multiplier: 0.8),
+                    subtitleLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 20.0),
+                ])
+            }
+            subtitleLabel?.textAlignment = .center
+            subtitleLabel?.text = cueText
+            subtitleLabel?.isHidden = false
+        } else {
+            subtitleLabel?.isHidden = true
+        }
 
-        if let subtitles = strings.first {
+        if onTextTrackDataChanged != nil, let subtitles = strings.first {
             self.onTextTrackDataChanged?(["subtitleTracks": subtitles.string])
         }
     }

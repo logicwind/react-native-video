@@ -60,6 +60,7 @@ import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.Renderer;
 import androidx.media3.exoplayer.dash.DashMediaSource;
 import androidx.media3.exoplayer.dash.DashUtil;
 import androidx.media3.exoplayer.dash.DefaultDashChunkSource;
@@ -89,8 +90,11 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.MergingMediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
+import androidx.media3.exoplayer.source.SingleSampleMediaSource;
 import androidx.media3.exoplayer.source.TrackGroupArray;
 import androidx.media3.exoplayer.source.ads.AdsMediaSource;
+import androidx.media3.exoplayer.text.TextOutput;
+import androidx.media3.exoplayer.text.TextRenderer;
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.exoplayer.trackselection.ExoTrackSelection;
@@ -731,7 +735,26 @@ public class ReactExoplayerView extends FrameLayout implements
         }
 
         DefaultRenderersFactory renderersFactory =
-                new DefaultRenderersFactory(getContext())
+                new DefaultRenderersFactory(getContext()) {
+                    // SingleSampleMediaSource (used for our sideloaded/external text tracks, see
+                    // buildSubtitleConfigurations()) always emits the legacy raw subtitle format
+                    // (e.g. text/vtt) rather than the newer application/x-media3-cues format, and
+                    // TextRenderer rejects legacy samples unless explicitly opted in.
+                    @Override
+                    protected void buildTextRenderers(
+                            Context context,
+                            TextOutput output,
+                            android.os.Looper outputLooper,
+                            int extensionRendererMode,
+                            ArrayList<Renderer> out) {
+                        super.buildTextRenderers(context, output, outputLooper, extensionRendererMode, out);
+                        for (Renderer renderer : out) {
+                            if (renderer instanceof TextRenderer) {
+                                ((TextRenderer) renderer).experimentalSetLegacyDecodingEnabled(true);
+                            }
+                        }
+                    }
+                }
                         .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
                         .setEnableDecoderFallback(true)
                         .forceEnableMediaCodecAsynchronousQueueing();
@@ -1150,6 +1173,22 @@ public class ReactExoplayerView extends FrameLayout implements
                         config.buildLoadErrorHandlingPolicy(source.getMinLoadRetryCount())
                 )
                 .createMediaSource(mediaItem);
+
+        // NOTE: HlsMediaSource/DashMediaSource/etc. (unlike DefaultMediaSourceFactory) do not read
+        // MediaItem.subtitleConfigurations themselves, so external subtitles set on the MediaItem
+        // above would otherwise be silently dropped here. Manually merge them in, matching what
+        // DefaultMediaSourceFactory does internally for sideloaded/external text tracks.
+        if (subtitleConfigurations != null && !subtitleConfigurations.isEmpty()) {
+            MediaSource[] mediaSourcesWithSubtitles = new MediaSource[subtitleConfigurations.size() + 1];
+            mediaSourcesWithSubtitles[0] = mediaSource;
+            SingleSampleMediaSource.Factory subtitleSourceFactory =
+                    new SingleSampleMediaSource.Factory(mediaDataSourceFactory);
+            for (int i = 0; i < subtitleConfigurations.size(); i++) {
+                mediaSourcesWithSubtitles[i + 1] =
+                        subtitleSourceFactory.createMediaSource(subtitleConfigurations.get(i), C.TIME_UNSET);
+            }
+            mediaSource = new MergingMediaSource(mediaSourcesWithSubtitles);
+        }
 
         if (cropStartMs >= 0 && cropEndMs >= 0) {
             return new ClippingMediaSource(mediaSource, cropStartMs * 1000, cropEndMs * 1000);

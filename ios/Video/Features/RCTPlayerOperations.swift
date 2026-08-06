@@ -102,7 +102,8 @@ enum RCTPlayerOperations {
                 if type == "language" {
                     optionValue = currentOption.extendedLanguageTag
                 } else {
-                    optionValue = currentOption.commonMetadata.map(\.value)[0] as? String
+                    // .first instead of [0] - commonMetadata can be empty and would otherwise crash.
+                    optionValue = currentOption.commonMetadata.map(\.value).first as? String
                 }
                 if value == optionValue {
                     mediaOption = currentOption

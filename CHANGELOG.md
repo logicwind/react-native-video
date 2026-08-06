@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (fork: `ott_sideload_text_tracks_6.19.2`)
+
+Fixes for merging backend-sideloaded external subtitles with text tracks
+already incorporated in the video's own manifest (embedded HLS text tracks).
+Not part of an upstream release; no breaking changes.
+
+### Bug Fixes
+
+* **android:** sideloaded/external subtitles were silently dropped for HLS/DASH/SmoothStreaming sources — `HlsMediaSource`/`DashMediaSource`/etc. factories don't read `MediaItem.subtitleConfigurations` the way `DefaultMediaSourceFactory` does, so they never reached the player. Now manually merged in via `MergingMediaSource`, matching what `DefaultMediaSourceFactory` does internally.
+* **android:** playback crashed with `Legacy decoding is disabled, can't handle text/vtt samples` once sideloaded subtitles started reaching the player — `SingleSampleMediaSource` always emits legacy `text/vtt` samples, which `TextRenderer` now rejects by default. Fixed by enabling `TextRenderer.experimentalSetLegacyDecodingEnabled(true)` on the renderers built for the player.
+* **ios/tvos:** `onLoad`/`onTextTracks` dropped every manifest-incorporated text track whenever any sideloaded track was present, because of a `??` fallback that only kicks in when the sideloaded list is empty. Now both lists are merged instead of one replacing the other.
+* **ios/tvos:** selecting a manifest-incorporated text track (e.g. an embedded "English" track) did nothing when the source also had sideloaded tracks, because track-selection routing was based on "does this source have any sideloaded tracks" rather than "is the selected track actually one of them." Now routes based on the selected track.
+* **ios/tvos:** manifest-incorporated subtitle cues were delivered by `AVPlayerItemLegibleOutput` but never rendered on screen — only forwarded to the (unused) `onTextTrackDataChanged` JS event. Now also rendered onto `subtitleLabel`, the same on-screen label the sideloaded-track pipeline uses.
+* **ios/tvos:** fixed a potential crash in `setMediaSelectionTrackForCharacteristic` from force-indexing a possibly-empty `commonMetadata` array (`[0]` → `.first`).
+
 ## [6.19.2](https://github.com/moskalakamil/react-native-video/compare/v6.19.1...v6.19.2) (2026-04-28)
 
 
