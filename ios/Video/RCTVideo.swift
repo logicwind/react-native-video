@@ -1118,7 +1118,7 @@ class RCTVideo: UIView, RCTVideoPlayerViewControllerDelegate, RCTPlayerObserverH
                 subtitles = []
             } else if selectedValue != "auto" {
                 self.subtitleLabel?.isHidden = false
-                if let selectedTextTrack = source.textTracks.first(where: { $0.title == selectedValue }) {
+                if let selectedTextTrack = source.textTracks.first(where: { $0.title == selectedValue || $0.language == selectedValue }) {
                     let subtitleUri = selectedTextTrack.uri
                     guard let subtitleUrl = URL(string: subtitleUri) else { return }
                     self.fetchSubtitles(from: subtitleUrl) { [weak self] result in
