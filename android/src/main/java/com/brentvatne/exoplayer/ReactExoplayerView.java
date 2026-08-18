@@ -1194,12 +1194,13 @@ public class ReactExoplayerView extends FrameLayout implements
                     configBuilder.setLanguage(track.getLanguage());
                 }
                 
-                // Set selection flags - make first track default if no specific track is selected
-                if (trackIndex == 0 && (textTrackType == null || "disabled".equals(textTrackType))) {
-                    configBuilder.setSelectionFlags(C.SELECTION_FLAG_DEFAULT);
-                } else {
-                    configBuilder.setSelectionFlags(0);
-                }
+                // Never auto-select a track here - selection is driven entirely by the app via
+                // setSelectedTextTrack()/selectTextTrackInternal() below. textTrackType defaults to
+                // "disabled" (see field declaration above) which is indistinguishable from the app's
+                // own explicit "captions off" state, so treating it as "no selection made yet" here
+                // force-selected the first external subtitle on every load, even when the app never
+                // asked for captions.
+                configBuilder.setSelectionFlags(0);
                 
                 MediaItem.SubtitleConfiguration subtitleConfiguration = configBuilder.build();
                 subtitleConfigurations.add(subtitleConfiguration);

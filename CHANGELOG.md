@@ -5,6 +5,7 @@
 ### Bug Fixes
 
 * **ios:** match sideloaded text track by `language` as a fallback when `title` doesn't match, when selecting a subtitle track for the custom WebVTT overlay
+* **android:** stop force-selecting the first sideloaded text track by default; selection is already driven entirely by `setSelectedTextTrack`
 
 ## [6.19.1](https://github.com/TheWidlarzGroup/react-native-video/compare/v6.19.0...v6.19.1) (2026-03-15)
 
